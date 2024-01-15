@@ -550,6 +550,8 @@ const { mutate } = useMutation({
 - 기본적으로 모달을 포탈을 사용하고, 강의와 밑에 코드는 모달 컴포넌트가 따로 있고 `children`으로 코드를 받아오는 로직
 
 ```js
+// EventDetails.jsx
+
 import Modal from "../UI/Modal.jsx";
 
 // 상세페이지 삭제 요청
@@ -610,3 +612,107 @@ const {
 
 - 사실 예외 처리 하는 부분은 당연한 것이기에 넘어가고 다시 학습하고 기억해야할 부분
   => `isPending: isDeletePending,` 과 같이 `별칭할당` `useQuery`와 `useMutation`을 같이 쓰게 된다고 했을때 `변수가 겹치기 때문에` `별칭을`따로 설정해서 사용할 수 있다.
+
+# 상세페이지 수정(Edit)하기 - onMutate,onError,onSettled사용
+
+```js
+// EditEvent.jsx
+
+const { mutate } = useMutation({
+  mutationFn: updateEvent,
+  onMutate: async (data) => {
+    // data를 통하여 mutate로 넘기는 값들을 가져올 수 있음
+    // 밑에 코드는 mutate로 넘기는 객체 값중 event키 값을 가져오는 것.
+    const newEvent = data.event;
+
+    // 충돌이 안나도록 진행중인 쿼리를 취소한다.
+    await queryClient.cancelQueries({
+      queryKey: ["events", { id: params.id }],
+    });
+    // 롤백을 위해서 임의로 수정전에 기존 값을 변수에 저장
+    const previousEvent = queryClient.getQueryData([
+      "events",
+      { id: params.id },
+    ]);
+    // setQueryData를 통하여 저장된 값을 수정함(백엔드 수정x)
+    queryClient.setQueryData(["events", { id: params.id }], newEvent);
+
+    return { previousEvent };
+  },
+  onError: (context) => {
+    // 만약 에러가 생기면 onMutate에서 임의로 수정한 값이 있는데 리턴을 통하여 기존 값 저장한 데이터를 context로 받아 올 수 있고,
+    // 똑같이 setQueryData를 통하여 이전값으로 임의로 롤백을 한다고 이해하면된다.
+    queryClient.setQueryData(
+      ["events", { id: params.id }],
+      context.previousEvent
+    );
+  },
+  onSettled: () => {
+    // 모든 상황이 끝나면 초기화를 통하여 백과 프론트단에 데이터가 동일한지 업데이트 진행이라고 이해하면된다.
+    queryClient.invalidateQueries(["events", { id: params.id }]);
+  },
+});
+
+function handleSubmit(formData) {
+  mutate({ id: params.id, event: formData });
+  navigate("../");
+}
+```
+
+## 설명
+
+1. 위에 로직을 먼저 설명하자면
+
+- 백엔드로 요청하고 응답을 받아서 처리하기전, 프론트단에서 데이터를 임의로 수정하여 먼저 보여준후 백엔드 응답에 따라 사후 처리하는 로직
+
+2. onMutate로 `data`를 받아 올 수 있는데 `mutate()`로 넘겨준 값들을 받아 올 수 있다. 그 값을 저장하고 `queryClient`에 여러 속성들을 사용하여 취소,가져오기,수정을 한다.
+3. 그후 onError를 통하여 요청에 에러가 있다면 기존 값으로 수정을하고
+4. onSettled에서 마지막에 서버와 프론트단에 데이터가 서로 같도록 업데이트 해준다.
+
+# 요청시 queryKey 객체 값으로 요청함수에 값 전달하기(queryKey이용하기)
+
+```js
+// http.js
+
+export async function fetchEvents({ signal, searchPath, max }) {
+  let url = "http://localhost:3000/events";
+
+  if (searchPath && max) {
+    url += "?search=" + searchPath + "?max=" + max;
+  } else if (searchPath) {
+    url += "?search=" + searchPath;
+  } else if (max) {
+    url += "?max=" + max;
+  }
+
+  const response = await fetch(url, { signal: signal });
+
+  if (!response.ok) {
+    const error = new Error("An error occurred while fetching the events");
+    error.code = response.status;
+    error.info = await response.json();
+    throw error;
+  }
+
+  const { events } = await response.json();
+
+  return events;
+}
+
+----------------------------------------------
+
+// NewEventsSection.jsx
+
+const { data, isPending, isError, error } = useQuery({
+  queryKey: ["events", { max: 3 }],
+  queryFn: ({ signal, queryKey }) => fetchEvents({ signal, ...queryKey[1] }),
+  // 브라우저 캐쉬 유효 시간 설정
+  staleTime: 5 * 1000,
+  // 캐쉬 보관 시간 설정
+  // gcTime: 1000,
+});
+```
+
+## 설명
+
+1. 데이터를 3개만 가져오도록 요청 하는 코드인데, `queryKey`구분을 위해 아이디를 줬을때, 요청값도 같다면 `queryFn`에서 `queryKey`를 받아 올 수 있고, 배열 인덱스를 통해 그 값을 불러올 수 있다.
